@@ -8,7 +8,7 @@ This example shows various AddressInfo operations:
 - Checking hierarchy relationships
 """
 
-from fias_public_api import get_token_sync, SyncFPA, AddressType
+from fias_public_api import AddressType, SyncFPA, get_token_sync
 
 
 def main():

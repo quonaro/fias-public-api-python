@@ -5,8 +5,9 @@ This example shows how to use the retry decorator to handle
 connection errors and 500 errors that often occur on first request.
 """
 
-from fias_public_api import get_token_sync, SyncFPA, retry_on_error, AddressType
 from requests.exceptions import ConnectionError, HTTPError
+
+from fias_public_api import AddressType, SyncFPA, get_token_sync, retry_on_error
 
 
 # Apply retry decorator to a function that uses the API

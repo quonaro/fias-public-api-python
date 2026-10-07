@@ -1,23 +1,28 @@
 [project]
 name = "fias-public-api"
 version = "1.0.7"
-description = "Python client for FIAS Public API - Russian address database"
+description = "Unofficial Python client for FIAS Public API - Russian address database"
 readme = "README.md"
-requires-python = ">=3.12"
-license = { text = "MIT" }
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "quonaro", email = "quonaro@mail.ru" }]
 keywords = ["fias", "russia", "address", "api", "nalog"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
 ]
 dependencies = ["httpx>=0.28.1", "requests>=2.32.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-asyncio", "pytest-cov", "ruff"]
 
 [project.urls]
 Homepage = "https://github.com/quonaro/fias-public-api"
@@ -31,13 +36,36 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["fias_public_api"]
-include = ["README.md", "LICENSE"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
+[tool.ruff]
+# The rule set is pinned on purpose: ruff's defaults change between releases,
+# and an unpinned linter turns a dependency bump into a red build.
+target-version = "py310"
+line-length = 88
 
-[dependency-groups]
-dev = ["pytest", "ruff", "pytest-asyncio"]
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501", # line length is not enforced; long docstring lines are fine
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Demo scripts catch broadly so a reader sees one example instead of five.
+"examples/*" = ["B904"]
+# The live API tests skip on any failure by design.
+"tests/test_fias_*.py" = ["B017"]
+
+[tool.coverage.run]
+source = ["fias_public_api"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# Branch coverage, not just line coverage: the gaps this suite was written to
+# close were branches (a client that was never closed, a filter never sent).
+# Mark genuinely unreachable lines with `# pragma: no cover`.
+fail_under = 95
 
 [tool.pytest.ini_options]
 # Test discovery patterns
@@ -45,21 +73,27 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+minversion = "7.0"
 
-# Output options - более понятный вывод как в Python интерпретаторе
+# Async tests and fixtures are picked up without an explicit marker.
+asyncio_mode = "auto"
+
+# Output options
 addopts = [
-    "-vv",              # Verbose output - показывает каждый тест
-    "--tb=short",       # Short traceback format (как в Python)
-    "--showlocals",     # Показывать локальные переменные при ошибках
-    "--strict-markers", # Строгая проверка маркеров
-    "--color=yes",      # Цветной вывод
-    "--durations=10",   # Показывать 10 самых медленных тестов
+    "-vv",              # Verbose output
+    "--tb=short",       # Short traceback format
+    "--showlocals",     # Show local variables on failures
+    "--strict-markers", # Unknown markers are an error
+    "--color=yes",      # Colored output
+    "--durations=10",   # Show the 10 slowest tests
+    "-m",
+    "not integration",  # Live API tests are opt-in: pytest -m integration
 ]
 
 # Markers для категоризации тестов
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
+    "integration: hits the live FIAS API (deselect with '-m \"not integration\"')",
     "unit: marks tests as unit tests",
 ]
 
@@ -68,6 +102,3 @@ log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
-
-# Минимальная версия pytest
-minversion = "7.0"

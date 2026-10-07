@@ -7,7 +7,7 @@ This example shows different search operations:
 - SearchAddressItem - get single address item
 """
 
-from fias_public_api import get_token_sync, SyncFPA, AddressType
+from fias_public_api import AddressType, SyncFPA, get_token_sync
 
 
 def main():

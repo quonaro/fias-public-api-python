@@ -8,7 +8,8 @@ This example demonstrates:
 """
 
 import asyncio
-from fias_public_api import get_token_async, AsyncFPA, AddressType
+
+from fias_public_api import AddressType, AsyncFPA, get_token_async
 
 
 async def search_address(api: AsyncFPA, query: str):

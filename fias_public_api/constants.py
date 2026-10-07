@@ -1,10 +1,15 @@
+import asyncio
+import inspect
 import json
 import logging
+import sys
+import time
+from collections.abc import Callable
 from enum import IntEnum
 from functools import wraps
-import time
-import inspect
-from typing import Callable, TypeVar, ParamSpec
+from typing import ParamSpec, TypeVar
+
+import httpx
 
 
 class JsonFormatter(logging.Formatter):
@@ -49,6 +54,28 @@ def _truncate_body(body, max_len=1000):
     return s
 
 
+_CONSOLE_HANDLER_ATTR = "_fias_console_handler"
+
+
+def enable_console_logging(logger, level=logging.DEBUG):
+    """Attach the JSON console handler to a logger, at most once.
+
+    The client loggers are module-level, so they are shared by every instance.
+    Adding a handler from each constructor would duplicate every line and grow
+    the handler list without bound, so the handler is created once and kept on
+    the logger itself. The level of the shared logger is set on each call, so
+    the last instance to ask wins.
+    """
+    handler = getattr(logger, _CONSOLE_HANDLER_ATTR, None)
+    if handler is None:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(JsonFormatter())
+        setattr(logger, _CONSOLE_HANDLER_ATTR, handler)
+        logger.addHandler(handler)
+    handler.setLevel(level)
+    logger.setLevel(level)
+
+
 # Base URLs
 BASE_URL = "https://fias-public-service.nalog.ru/api/spas/v2.0"
 TOKEN_URL = "https://fias.nalog.ru/Home/GetSpasSettings"
@@ -72,25 +99,23 @@ SEARCH_ADDRESS_ITEM = f"{BASE_URL}/SearchAddressItem"
 # Location endpoints
 GET_LOCATION_BY_IP = f"{BASE_URL}/GetLocationByIP"
 
-# Default exceptions for retry decorator
-DEFAULT_RETRY_EXCEPTIONS = (
-    Exception,  # Catch all exceptions by default
-)
+# Default timeout for every HTTP request, in seconds. Without one a hung
+# connection blocks the caller forever.
+DEFAULT_TIMEOUT = 15.0
 
-# Sync-specific exceptions
-SYNC_RETRY_EXCEPTIONS = (
-    ConnectionResetError,
-    OSError,
-)
-
-# Async-specific exceptions
-ASYNC_RETRY_EXCEPTIONS = (
-    ConnectionResetError,
-    OSError,
-)
+# Default exceptions for retry decorator: what a retry can plausibly fix.
+#
+# `requests` derives its whole error tree from OSError, so OSError alone covers
+# it. `httpx` does not: HTTPError (and therefore TransportError, ConnectError,
+# TimeoutException, HTTPStatusError) inherits straight from Exception, so it has
+# to be named. Without it the async client would retry nothing by default.
+#
+# Programming errors (ValueError for an empty query, KeyError, TypeError) stay
+# out on purpose: repeating a request that cannot succeed only wastes time.
+DEFAULT_RETRY_EXCEPTIONS = (OSError, httpx.HTTPError)
 
 
-def STANDART_HEADERS(token):
+def STANDARD_HEADERS(token):
     """Создать стандартные заголовки для HTTP запросов к API ФИАС.
 
     Args:
@@ -104,6 +129,10 @@ def STANDART_HEADERS(token):
         "master-token": token,
         "Content-Type": "application/json",
     }
+
+
+# Историческое имя с опечаткой, оставлено для совместимости.
+STANDART_HEADERS = STANDARD_HEADERS
 
 
 class AddressType(IntEnum):
@@ -228,7 +257,12 @@ def retry_on_error(
 
     Returns:
         Callable: Декорированная функция
+
+    Raises:
+        ValueError: Если max_retries меньше 1
     """
+    if max_retries < 1:
+        raise ValueError("max_retries must be at least 1")
     if exceptions is None:
         exceptions = DEFAULT_RETRY_EXCEPTIONS
 
@@ -237,47 +271,32 @@ def retry_on_error(
 
             @wraps(func)
             async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-                import asyncio
-
                 current_delay = delay
-                last_exception = None
-
                 for attempt in range(max_retries):
                     try:
                         return await func(*args, **kwargs)
-                    except exceptions as e:
-                        last_exception = e
-                        if attempt < max_retries - 1:
-                            await asyncio.sleep(current_delay)
-                            current_delay *= backoff
-                        else:
+                    except exceptions:
+                        # The last attempt re-raises, so the loop never falls
+                        # through and there is no trailing return to write.
+                        if attempt == max_retries - 1:
                             raise
-
-                if last_exception:
-                    raise last_exception
+                        await asyncio.sleep(current_delay)
+                        current_delay *= backoff
 
             return async_wrapper
-        else:
 
-            @wraps(func)
-            def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-                current_delay = delay
-                last_exception = None
+        @wraps(func)
+        def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            current_delay = delay
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions:
+                    if attempt == max_retries - 1:
+                        raise
+                    time.sleep(current_delay)
+                    current_delay *= backoff
 
-                for attempt in range(max_retries):
-                    try:
-                        return func(*args, **kwargs)
-                    except exceptions as e:
-                        last_exception = e
-                        if attempt < max_retries - 1:
-                            time.sleep(current_delay)
-                            current_delay *= backoff
-                        else:
-                            raise
-
-                if last_exception:
-                    raise last_exception
-
-            return sync_wrapper
+        return sync_wrapper
 
     return decorator

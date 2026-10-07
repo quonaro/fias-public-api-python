@@ -1,0 +1,38 @@
+test:
+  desc: Run offline unit tests
+  color: green
+  script: pytest -m "not integration" --cov=fias_public_api
+
+lint:
+  desc: Run ruff
+  color: yellow
+  script: ruff check .
+
+build:
+  desc: Build the wheel and sdist
+  color: blue
+  script: uv build
+
+push:
+  desc: Push to GitHub
+  color: cyan
+  args:
+  - "tag:str?"
+  script: |
+    if [ -n "$tag" ]; then
+      if ! echo "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "tag must look like v1.2.3, got: $tag"
+        exit 1
+      fi
+      version=$(echo "$tag" | sed 's/^v//')
+      sed -i "s/^version = .*/version = \"$version\"/" pyproject.toml
+      if ! git diff --quiet pyproject.toml; then
+        git add pyproject.toml
+        git commit -m "chore: bump version to $version"
+      fi
+      git tag -f "$tag"
+      git push origin main
+      git push origin "$tag" --force
+    else
+      git push origin main
+    fi

@@ -4,7 +4,7 @@ Example demonstrating Location methods.
 This example shows how to get location by IP address.
 """
 
-from fias_public_api import get_token_sync, SyncFPA, AddressType
+from fias_public_api import AddressType, SyncFPA, get_token_sync
 
 
 def main():

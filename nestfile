@@ -1,7 +1,7 @@
 
 @function clean():
     echo "Cleaning up..."
-    rm -rfv .pytest_cache .venv
+    rm -rfv .pytest_cache .venv .ruff_cache
     find . -name "__pycache__" -type d -exec rm -r {} +
     echo "Cleaned down"
 
@@ -10,18 +10,23 @@ test:
 
     all:
         > script: |
-            test:async
-            test:sync
-    async:
-        
+            test:lint
+            test:unit
+            test:integration
+    unit:
         > script: |
-            echo "Start Async functions"
-            uv run pytest tests/test_fias_async.py
+            echo "Unit tests (offline, HTTP is mocked)"
+            uv run pytest --cov --cov-report=term-missing
 
-    sync:
+    integration:
         > script: |
-            echo "Start Sync functions"
-            uv run pytest tests/test_fias_sync.py
+            echo "Live tests against the real FIAS API"
+            uv run pytest -m integration
 
-    > before: uv sync
+    lint:
+        > script: |
+            echo "Lint"
+            uv run ruff check .
+
+    > before: uv sync --extra dev
     > after[hide]: clean

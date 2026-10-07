@@ -2,207 +2,137 @@ name: Publish to PyPI
 
 on:
   push:
-    branches:
-    - main
+    tags:
+    - 'v*'
   release:
     types: [ published ]
   workflow_dispatch:
 
 
 jobs:
-  bump-version:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  test:
+    # Nothing reaches PyPI without a green test run first.
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        fetch-depth: 0
-
-    - name: Check if version was already bumped
-      id: check_bump
-      run: |
-        # Check if current commit message contains "bump version"
-        CURRENT_COMMIT_MSG=$(git log -1 --pretty=%B)
-
-        if echo "$CURRENT_COMMIT_MSG" | grep -q "bump version"; then
-          echo "already_bumped=true" >> $GITHUB_OUTPUT
-          echo "Current commit is a version bump, skipping"
-          exit 0
-        fi
-
-        # Check if last commit (if exists) was a version bump by github-actions
-        if git rev-parse HEAD~1 >/dev/null 2>&1; then
-          LAST_COMMIT_MSG=$(git log -1 --pretty=%B HEAD~1)
-          LAST_COMMIT_AUTHOR=$(git log -1 --pretty=%an HEAD~1)
-          if echo "$LAST_COMMIT_MSG" | grep -q "bump version" && [ "$LAST_COMMIT_AUTHOR" = "github-actions[bot]" ]; then
-            echo "already_bumped=true" >> $GITHUB_OUTPUT
-            echo "Last commit was a version bump, skipping"
-            exit 0
-          fi
-        fi
-
-        echo "already_bumped=false" >> $GITHUB_OUTPUT
-        echo "Version needs to be bumped"
-
-    - name: Extract current version
-      id: current_version
-      if: steps.check_bump.outputs.already_bumped == 'false'
-      run: |
-        CURRENT_VERSION=$(grep -m 1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
-        echo "current=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-        echo "Current version: $CURRENT_VERSION"
-
-    - name: Calculate new version
-      id: new_version
-      if: steps.check_bump.outputs.already_bumped == 'false'
-      run: |
-        CURRENT="${{ steps.current_version.outputs.current }}"
-        IFS='.' read -r -a VERSION_PARTS <<< "$CURRENT"
-        MAJOR="${VERSION_PARTS[0]}"
-        MINOR="${VERSION_PARTS[1]}"
-        PATCH="${VERSION_PARTS[2]}"
-
-        # Increment patch version
-        NEW_PATCH=$((PATCH + 1))
-        NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-
-        echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
-        echo "New version: $NEW_VERSION"
-
-    - name: Update version in pyproject.toml
-      if: steps.check_bump.outputs.already_bumped == 'false'
-      run: |
-        NEW_VERSION="${{ steps.new_version.outputs.new }}"
-        if [[ "$OSTYPE" == "darwin"* ]]; then
-          # macOS
-          sed -i '' "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
-        else
-          # Linux
-          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
-        fi
-        echo "Updated version to $NEW_VERSION"
-
-    - name: Commit and push version bump
-      if: steps.check_bump.outputs.already_bumped == 'false'
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add pyproject.toml README.md
-        git commit -m "bump version to ${{ steps.new_version.outputs.new }} [skip ci]"
-        git push origin main
-
-        # Wait a bit for the push to be processed
-        sleep 2
-
-  publish:
-    needs: bump-version
-    if: always()
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Wait for version update (if bumped)
-      if: github.event_name == 'push' && needs.bump-version.result == 'success'
-      run: |
-        echo "Waiting for version bump commit to be available..."
-        sleep 5
-        git fetch origin main
-        git checkout main || git checkout ${{ github.ref_name }}
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
 
-    - name: Extract version from pyproject.toml
+    - name: Install
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]"
+
+    - name: Lint
+      run: ruff check .
+
+    - name: Test
+      run: pytest --cov --cov-report=term-missing
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # REQUIRED for trusted publishing
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Resolve the release version
       id: version
       run: |
-        VERSION=$(grep -m 1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+        # A tag push carries the version in the tag itself (lota push v1.1.0
+        # already wrote it into pyproject.toml; this keeps them in sync even
+        # when the tag was created by hand). For workflow_dispatch there is no
+        # tag, so the version already in pyproject.toml is used as is.
+        if [ "${{ github.ref_type }}" = "tag" ]; then
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version = .*/version = \"$VERSION\"/" pyproject.toml
+        else
+          VERSION=$(grep -m 1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+        fi
         echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Extracted version: $VERSION"
+        echo "Releasing $VERSION"
 
-    - name: Check if tag exists
-      id: check_tag
-      if: github.event_name == 'push'
+    - name: Check whether the version is already on PyPI
+      id: check_pypi
       run: |
-        TAG="v${{ steps.version.outputs.version }}"
-        if git rev-parse "$TAG" >/dev/null 2>&1; then
+        VERSION="${{ steps.version.outputs.version }}"
+        if curl -fsS "https://pypi.org/pypi/fias-public-api/${VERSION}/json" >/dev/null; then
           echo "exists=true" >> $GITHUB_OUTPUT
-          echo "Tag $TAG already exists, skipping release creation"
+          echo "fias-public-api ${VERSION} is already on PyPI; nothing to upload"
         else
           echo "exists=false" >> $GITHUB_OUTPUT
-          echo "Tag $TAG does not exist, will create release"
         fi
 
-    - name: Create Git tag
-      if: github.event_name == 'push' && steps.check_tag.outputs.exists == 'false'
-      run: |
-        TAG="v${{ steps.version.outputs.version }}"
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag -a "$TAG" -m "Release $TAG"
-        git push origin "$TAG"
-
-    - name: Create GitHub Release
-      if: github.event_name == 'push' && steps.check_tag.outputs.exists == 'false'
-      uses: softprops/action-gh-release@v1
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
-        tag_name: v${{ steps.version.outputs.version }}
-        name: Release v${{ steps.version.outputs.version }}
-        body: |
-          ## Changes
-
-          See [commit history](https://github.com/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}) for details.
-        draft: false
-        prerelease: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        python-version: '3.12'
 
     - name: Install UV
       uses: astral-sh/setup-uv@v4
       with:
         version: "latest"
 
-    - name: Build package with UV
+    - name: Build package
       run: uv build
 
     - name: Publish to PyPI (Trusted Publishing)
-      if: |
-        github.event_name == 'release' || 
-        github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'push' && steps.check_tag.outputs.exists == 'false')
-      continue-on-error: true
       id: publish_trusted
+      if: steps.check_pypi.outputs.exists == 'false'
+      continue-on-error: true # falls through to the token fallback; the verify step is the real gate
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
         packages-dir: dist/
         print-hash: true
 
-    - name: Publish to PyPI via UV (API Token fallback)
+    - name: Publish to PyPI via UV (API token fallback)
       if: |
-        (github.event_name == 'release' || 
-         github.event_name == 'workflow_dispatch' ||
-         (github.event_name == 'push' && steps.check_tag.outputs.exists == 'false')) &&
+        steps.check_pypi.outputs.exists == 'false' &&
         (steps.publish_trusted.outcome == 'failure' || steps.publish_trusted.outcome == 'cancelled')
       env:
         UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
         if [ -z "$UV_PUBLISH_TOKEN" ]; then
-          echo "PYPI_API_TOKEN secret is not set, skipping UV publish fallback"
-          exit 0
+          echo "::error::Trusted publishing failed and PYPI_API_TOKEN is not set, so nothing was uploaded"
+          exit 1
         fi
-        echo "Trusted publishing failed, using UV with API token as fallback"
         uv publish --token "$UV_PUBLISH_TOKEN"
+
+    - name: Verify the release is on PyPI
+      # The last word. A green run that published nothing is worse than a red
+      # one: this is how 1.0.4 and 1.0.7 went missing without anyone noticing.
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        for attempt in 1 2 3 4 5; do
+          if curl -fsS "https://pypi.org/pypi/fias-public-api/${VERSION}/json" >/dev/null; then
+            echo "fias-public-api ${VERSION} is on PyPI"
+            exit 0
+          fi
+          echo "Not visible on PyPI yet (attempt ${attempt}/5), waiting..."
+          sleep 10
+        done
+        echo "::error::fias-public-api ${VERSION} was not published to PyPI"
+        exit 1
+
+    - name: Create GitHub Release
+      if: github.event_name == 'push'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ steps.version.outputs.version }}
+        name: Release v${{ steps.version.outputs.version }}
+        generate_release_notes: true
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

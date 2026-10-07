@@ -9,56 +9,69 @@
     >>> token = get_token_sync()
     >>> api = SyncFPA(token, AddressType.ADMINISTRATIVE)
     >>> results = api.search("Москва, Красная площадь")
-    >>> details = api.details(12345)
+    >>> details = api.details_by_id(12345)
 """
 
 import json
 import logging
-import sys
 import time
+import warnings
+
 import requests
+
 from .constants import (
-    STANDART_HEADERS,
-    AddressType,
-    TOKEN_URL,
-    GET_REGIONS,
+    DEFAULT_TIMEOUT,
+    GET_ADDRESS_HINT,
+    GET_ADDRESS_ITEM_BY_CADASTRAL_NUMBER,
+    GET_ADDRESS_ITEM_BY_GUID,
+    GET_ADDRESS_ITEM_BY_ID,
     GET_ADDRESS_ITEMS,
     GET_DETAILS,
-    IS_DESCENDANT,
-    HAS_DESCENDANTS,
-    GET_ADDRESS_ITEM_BY_ID,
-    GET_ADDRESS_ITEM_BY_GUID,
-    GET_ADDRESS_ITEM_BY_CADASTRAL_NUMBER,
     GET_FIAS_OBJECT_TYPES,
-    SEARCH_ADDRESS_ITEMS,
-    GET_ADDRESS_HINT,
-    SEARCH_ADDRESS_ITEM,
     GET_LOCATION_BY_IP,
-    log_method_call,
-    JsonFormatter,
+    GET_REGIONS,
+    HAS_DESCENDANTS,
+    IS_DESCENDANT,
+    SEARCH_ADDRESS_ITEM,
+    SEARCH_ADDRESS_ITEMS,
+    STANDARD_HEADERS,
+    TOKEN_URL,
+    AddressType,
     _safe_headers,
     _truncate_body,
+    enable_console_logging,
+    log_method_call,
 )
 
 
-def get_token_sync(url="https://fias.nalog.ru/"):
+def get_token_sync(url="https://fias.nalog.ru/", timeout=DEFAULT_TIMEOUT):
     """Получить токен аутентификации из сервиса ФИАС.
 
     Args:
         url (str): Базовый URL сервиса ФИАС
+        timeout (float): Таймаут запроса в секундах
 
     Returns:
         str: Токен аутентификации
 
     Raises:
         ValueError: Если не удалось получить токен
-        requests.HTTPError: Если HTTP запрос завершился ошибкой
+        requests.RequestException: Если HTTP запрос завершился ошибкой
     """
-    response = requests.get(TOKEN_URL, params={"url": url})
-    response.raise_for_status()
+    response = requests.get(TOKEN_URL, params={"url": url}, timeout=timeout)
     if response.status_code != 200:
         raise ValueError("Не удалось получить токен")
-    return response.json()["Token"]
+    payload = response.json()
+    if "Token" not in payload:
+        raise ValueError("Ответ сервиса не содержит токен")
+    return payload["Token"]
+
+
+# The client logger, configured once: a NullHandler keeps the library quiet by
+# default, and every instance shares this logger instead of adding handlers of
+# its own.
+_logger = logging.getLogger(__name__)
+_logger.addHandler(logging.NullHandler())
 
 
 class SyncFPA:
@@ -72,6 +85,9 @@ class SyncFPA:
         address_type (int | AddressType): Тип адреса (1 — административный, 2 — муниципальный).
             Используется по умолчанию для всех запросов. Может быть переопределён
             в конкретном методе через параметр address_type.
+        enable_logging (bool): Включить вывод логов запросов в stdout
+        log_level (int): Уровень логирования
+        timeout (float): Таймаут каждого HTTP запроса в секундах
     """
 
     def __init__(
@@ -80,17 +96,14 @@ class SyncFPA:
         address_type: int | AddressType,
         enable_logging: bool = False,
         log_level: int = logging.DEBUG,
+        timeout: float = DEFAULT_TIMEOUT,
     ):
         self.token = token
         self.address_type = int(address_type)
-        self._logger = logging.getLogger(__name__)
-        self._logger.addHandler(logging.NullHandler())
+        self.timeout = timeout
+        self._logger = _logger
         if enable_logging:
-            handler = logging.StreamHandler(sys.stdout)
-            handler.setLevel(log_level)
-            handler.setFormatter(JsonFormatter())
-            self._logger.setLevel(log_level)
-            self._logger.addHandler(handler)
+            enable_console_logging(self._logger, log_level)
 
     def _get_address_type(self, address_type: int | AddressType | None) -> int:
         """Получить тип адреса, используя значение по умолчанию из конструктора если не указано."""
@@ -149,7 +162,13 @@ class SyncFPA:
         self._log_request(method.upper(), url, headers, params, body)
 
         response = requests.request(
-            method, url, headers=headers, params=params, json=json_payload, **kwargs
+            method,
+            url,
+            headers=headers,
+            params=params,
+            json=json_payload,
+            timeout=self.timeout,
+            **kwargs,
         )
 
         duration_ms = (time.time() - start) * 1000
@@ -161,6 +180,9 @@ class SyncFPA:
             response.text,
             duration_ms,
         )
+        # Log first, then raise: the error body is the most useful part of a
+        # failing request and would otherwise be lost.
+        response.raise_for_status()
         return response
 
     @log_method_call()
@@ -174,7 +196,7 @@ class SyncFPA:
             requests.HTTPError: Если HTTP запрос завершился ошибкой
         """
         response = self._make_request(
-            "GET", GET_REGIONS, headers=STANDART_HEADERS(self.token)
+            "GET", GET_REGIONS, headers=STANDARD_HEADERS(self.token)
         )
         return response.json()
 
@@ -222,7 +244,7 @@ class SyncFPA:
             "POST",
             GET_ADDRESS_ITEMS,
             json=payload,
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
@@ -243,7 +265,7 @@ class SyncFPA:
             "GET",
             GET_DETAILS,
             params={"object_id": object_id},
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
@@ -275,7 +297,7 @@ class SyncFPA:
         }
 
         response = self._make_request(
-            "GET", IS_DESCENDANT, params=params, headers=STANDART_HEADERS(self.token)
+            "GET", IS_DESCENDANT, params=params, headers=STANDARD_HEADERS(self.token)
         )
         return response.json()
 
@@ -307,7 +329,7 @@ class SyncFPA:
         }
 
         response = self._make_request(
-            "GET", HAS_DESCENDANTS, params=params, headers=STANDART_HEADERS(self.token)
+            "GET", HAS_DESCENDANTS, params=params, headers=STANDARD_HEADERS(self.token)
         )
         return response.json()
 
@@ -339,7 +361,7 @@ class SyncFPA:
             "GET",
             GET_ADDRESS_ITEM_BY_ID,
             params=params,
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
@@ -371,7 +393,7 @@ class SyncFPA:
             "GET",
             GET_ADDRESS_ITEM_BY_GUID,
             params=params,
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
@@ -401,7 +423,7 @@ class SyncFPA:
             "GET",
             GET_ADDRESS_ITEM_BY_CADASTRAL_NUMBER,
             params=params,
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
@@ -416,7 +438,7 @@ class SyncFPA:
             requests.HTTPError: Если HTTP запрос завершился ошибкой
         """
         response = self._make_request(
-            "GET", GET_FIAS_OBJECT_TYPES, headers=STANDART_HEADERS(self.token)
+            "GET", GET_FIAS_OBJECT_TYPES, headers=STANDARD_HEADERS(self.token)
         )
         return response.json()
 
@@ -450,7 +472,7 @@ class SyncFPA:
             "GET",
             SEARCH_ADDRESS_ITEMS,
             params=params,
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
@@ -494,7 +516,7 @@ class SyncFPA:
                 "GET",
                 GET_ADDRESS_HINT,
                 params=params,
-                headers=STANDART_HEADERS(self.token),
+                headers=STANDARD_HEADERS(self.token),
             )
         else:
             # POST request
@@ -509,7 +531,7 @@ class SyncFPA:
                 "POST",
                 GET_ADDRESS_HINT,
                 json=payload,
-                headers=STANDART_HEADERS(self.token),
+                headers=STANDARD_HEADERS(self.token),
             )
         return response.json()
 
@@ -543,7 +565,7 @@ class SyncFPA:
             "GET",
             SEARCH_ADDRESS_ITEM,
             params=params,
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
@@ -573,14 +595,20 @@ class SyncFPA:
             "GET",
             GET_LOCATION_BY_IP,
             params=params,
-            headers=STANDART_HEADERS(self.token),
+            headers=STANDARD_HEADERS(self.token),
         )
         return response.json()
 
     @log_method_call()
     def details(self, object_id: int, address_type: int | AddressType | None = None):
         """Устаревший метод. Используйте details_by_id вместо этого."""
-        print("details устарел, используйте details_by_id вместо этого")
+        # stacklevel=3: this method is wrapped by log_method_call, so the caller
+        # sits two frames above the wrapper.
+        warnings.warn(
+            "details() устарел, используйте details_by_id вместо этого",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         return self.details_by_id(object_id, address_type)
 
     @log_method_call()

@@ -8,8 +8,9 @@ This example shows how to handle various errors:
 - Using retry decorator
 """
 
-from fias_public_api import get_token_sync, SyncFPA, retry_on_error, AddressType
 from requests.exceptions import ConnectionError, HTTPError, RequestException
+
+from fias_public_api import AddressType, SyncFPA, get_token_sync, retry_on_error
 
 
 def main():
