@@ -327,6 +327,7 @@ MIT. Подробности см. в файле [LICENSE](LICENSE).
 
 ## 🔗 Полезные ссылки
 
+- [Как внести вклад](CONTRIBUTING.md)
 - [PyPI Package](https://pypi.org/project/fias-public-api/)
 - [Официальный сайт ФИАС](https://fias.nalog.ru/)
 - [Swagger UI FIAS Public Service](https://fias-public-service.nalog.ru/api/spas/v2.0/swagger/index.html)
